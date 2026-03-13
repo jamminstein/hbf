@@ -98,6 +98,13 @@ local s = {
   stutter_lock = false,
   stutter_lock_note = nil,
   stutter_lock_started = false,
+  -- NEW: screen animation state
+  beat_phase   = 0,
+  popup_param  = nil,
+  popup_val    = nil,
+  popup_time   = 0,
+  string_flash = {0, 0, 0, 0, 0, 0},  -- brightness for each string
+  strum_dir    = 1,  -- 1 = down, -1 = up
 }
 
 --------------------------------------------------------------------------------
@@ -240,6 +247,11 @@ local function play_note(midi, vel, dur)
     engine.hz(hz)
   end
   prev_hz = hz
+  
+  -- Trigger strum flash animation
+  for i = 1, 6 do
+    s.string_flash[i] = 12
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -537,54 +549,163 @@ local function build_roulette()
 end
 
 --------------------------------------------------------------------------------
--- SCREEN
+-- SCREEN - NEW DESIGN SYSTEM
 --------------------------------------------------------------------------------
 
-local CELL   = 4
-local anim_t = 0
-local flash_t = 0.0
-local flash_label = ""
+local anim_frame = 0
 
-local HELMET_BODY = {
-  {-3,-3},{-2,-3},{-1,-3},{0,-3},{1,-3},{2,-3},{3,-3},
-  {-3,-2},{-2,-2},{-1,-2},{0,-2},{1,-2},{2,-2},{3,-2},
-  {-3,-1},{-2,-1},{-1,-1},{0,-1},{1,-1},{2,-1},{3,-1},
-  {-3, 0},{-2, 0},{-1, 0},{0, 0},{1, 0},{2, 0},{3, 0},
-  {-2, 1},{-1, 1},{0, 1},{1, 1},{2, 1},
-  {-1, 2},{0, 2},{1, 2},
-}
-local HELMET_VISOR = {
-  {-2,0},{-1,0},{0,0},{1,0},{2,0},
-}
-
-local function draw_helmet(cx, cy, visor_bright, phase)
-  local ox = math.floor(math.sin(anim_t * 0.8 + phase) * 3)
-  local oy = math.floor(math.cos(anim_t * 0.6 + phase) * 2)
-  for _, p in ipairs(HELMET_BODY) do
-    local px = cx + (p[1] + ox) * CELL
-    local py = cy + (p[2] + oy) * CELL
-    if px >= 0 and px < 128 and py >= 0 and py < 64 then
-      screen.level(5)
-      screen.rect(px, py, CELL - 1, CELL - 1)
-      screen.fill()
-    end
+local function draw_status_strip()
+  -- y: 0-8
+  screen.level(4)
+  screen.font_size(8)
+  screen.move(1, 8)
+  screen.text("HBF")
+  
+  -- Current chord at center, level 12
+  screen.level(12)
+  screen.move(64, 8)
+  screen.text_center(string.upper(s.chord))
+  
+  -- Pattern slot P1-P4 at right, level 8
+  screen.level(8)
+  screen.move(120, 8)
+  screen.text("P" .. s.pattern_slot)
+  
+  -- Beat pulse dot at x=124, y=4
+  if s.playing then
+    local pulse = clamp(math.floor((math.sin(anim_frame * 0.5) + 1) * 4) + 8, 8, 15)
+    screen.level(pulse)
+    screen.circle(124, 4, 2)
+    screen.fill()
   end
-  for _, p in ipairs(HELMET_VISOR) do
-    local px = cx + (p[1] + ox) * CELL
-    local py = cy + (p[2] + oy) * CELL
-    if px >= 0 and px < 128 and py >= 0 and py < 64 then
-      local glow = clamp(math.floor(visor_bright + math.sin(anim_t * 3 + phase) * 3), 4, 15)
-      screen.level(glow)
-      screen.rect(px, py, CELL - 1, CELL - 1)
-      screen.fill()
+end
+
+local function draw_live_zone()
+  -- y: 9-52, show 6 horizontal strings with current chord notes
+  local y_base = 15
+  local y_spacing = 6
+  local x_start = 20
+  local x_end = 110
+  local offsets = CHORDS[s.chord]
+  
+  -- Draw 6 string lines at level 3
+  for i = 1, 6 do
+    screen.level(3)
+    local y = y_base + (i - 1) * y_spacing
+    screen.move(x_start, y)
+    screen.line(x_end, y)
+    screen.stroke()
+  end
+  
+  -- Draw chord note dots at level 12
+  -- Map chord offsets to string positions (simplified: show first 6 offsets or repeat)
+  for i = 1, 6 do
+    local offset_idx = ((i - 1) % #offsets) + 1
+    local x = x_start + (x_end - x_start) * (offset_idx / (#offsets + 1))
+    local y = y_base + (i - 1) * y_spacing
+    
+    -- Flash from string_flash state
+    local brightness = clamp(s.string_flash[i], 3, 12)
+    screen.level(brightness)
+    screen.circle(x, y, 2)
+    screen.fill()
+  end
+  
+  -- Draw strum direction arrow (up/down) at level 8, animates briefly on strum
+  local arrow_x = 115
+  local arrow_y = 30
+  screen.level(8)
+  screen.font_size(8)
+  if s.strum_dir == 1 then
+    screen.move(arrow_x, arrow_y)
+    screen.text("v")
+  else
+    screen.move(arrow_x, arrow_y)
+    screen.text("^")
+  end
+end
+
+local function draw_pattern_memory()
+  -- Show 4 small slots, level 3-4, active slot at level 12
+  local slot_x = 10
+  local slot_y = 40
+  local slot_spacing = 8
+  
+  for i = 1, 4 do
+    local x = slot_x + (i - 1) * slot_spacing
+    if i == s.pattern_slot then
+      screen.level(12)
+    else
+      screen.level(3)
+    end
+    screen.rect(x, slot_y, 6, 6)
+    screen.fill()
+  end
+end
+
+local function draw_context_bar()
+  -- y: 53-58
+  screen.level(6)
+  screen.font_size(8)
+  screen.move(1, 63)
+  screen.text("DIR:" .. (s.strum_dir == 1 and "DN" or "UP"))
+  
+  screen.level(5)
+  screen.move(30, 63)
+  screen.text("STUT:" .. (s.stutter and s.stutter_div or "-"))
+  
+  screen.level(5)
+  screen.move(60, 63)
+  screen.text("VOI:" .. string.upper(s.chord))
+  
+  screen.level(4)
+  screen.move(100, 63)
+  screen.text("CH:" .. (1 + (s.root_midi % 12)))
+end
+
+local function draw_popup()
+  -- Transient parameter popup at 0.8s duration
+  if s.popup_time > 0 then
+    local alpha = clamp(s.popup_time / 0.8, 0, 1)
+    local brightness = clamp(math.floor(alpha * 12), 3, 12)
+    
+    -- Semi-transparent background
+    screen.level(2)
+    screen.rect(40, 20, 50, 20)
+    screen.fill()
+    
+    -- Popup text
+    screen.level(brightness)
+    screen.font_size(8)
+    screen.move(65, 30)
+    screen.text_center(s.popup_param or "")
+    
+    screen.move(65, 38)
+    screen.text_center(tostring(s.popup_val or ""))
+  end
+end
+
+local function draw_stutter_flicker()
+  -- Stutter lock visual: flicker chord name at stutter rate
+  if s.stutter_lock then
+    local stutter_rate = params:get("stutter_rate") or 16
+    local flicker_period = (1.0 / stutter_rate) * 4  -- rough sync to stutter
+    local flicker = math.floor((anim_frame % flicker_period) * 2) % 2
+    
+    if flicker == 1 then
+      screen.level(15)
+      screen.font_size(8)
+      screen.move(64, 8)
+      screen.text_center(string.upper(s.chord))
     end
   end
 end
 
 function redraw()
   screen.clear()
-
-  -- scanlines
+  screen.aa(1)  -- anti-alias
+  
+  -- Scanlines effect
   for row = 0, 15 do
     if row % 2 == 0 then
       screen.level(1)
@@ -592,59 +713,14 @@ function redraw()
       screen.fill()
     end
   end
-
-  -- helmets
-  draw_helmet(30, 36, 14, 0)
-  draw_helmet(96, 36, 10, math.pi)
-
-  -- HUD top
-  screen.level(12)
-  screen.font_size(8)
-  screen.move(1, 9)
-  screen.text(string.upper(s.scale))
-
-  screen.level(8)
-  screen.move(72, 9)
-  screen.text(s.bpm .. "BPM")
-
-  -- play dot
-  if s.playing then
-    local pulse = clamp(math.floor((math.sin(anim_t * 5) + 1) * 4) + 6, 6, 15)
-    screen.level(pulse)
-    screen.circle(64, 5, 2)
-    screen.fill()
-  end
-
-  -- fx strip
-  local fx = ""
-  if s.chorus  then fx = fx .. "CHO "  end
-  if s.minimal then fx = fx .. "MIN "  end
-  if s.distort then fx = fx .. "DST "  end
-  if s.stutter then fx = fx .. "STT/" .. s.stutter_div .. " " end
-  if s.glide   then fx = fx .. "GLD "  end
-  if s.cascade then fx = fx .. "CAS "  end
-  if s.skip    then fx = fx .. "SKP "  end
-  if s.stutter_lock then fx = fx .. "LOCK " end
-
-  screen.level(5)
-  screen.font_size(8)
-  screen.move(1, 62)
-  screen.text(fx)
-
-  -- pattern slot indicator
-  screen.level(6)
-  screen.move(64, 62)
-  screen.text_center("P" .. s.pattern_slot)
-
-  -- flash label
-  if flash_t > 0 then
-    screen.level(clamp(math.floor(flash_t * 14), 1, 15))
-    screen.font_size(8)
-    screen.move(100, 62)
-    screen.text_center(flash_label)
-    flash_t = math.max(0, flash_t - 0.08)
-  end
-
+  
+  draw_status_strip()
+  draw_live_zone()
+  draw_pattern_memory()
+  draw_context_bar()
+  draw_popup()
+  draw_stutter_flicker()
+  
   screen.update()
 end
 
@@ -687,7 +763,7 @@ local function grid_draw()
   end
 
   -- pulse overlay
-  local pulse_lv = clamp(math.floor((math.sin(anim_t * 4) + 1) * 3) + 3, 3, 9)
+  local pulse_lv = clamp(math.floor((math.sin(anim_frame * 0.4) + 1) * 3) + 3, 3, 9)
   for _, pc in ipairs(pulse_cells) do
     g:led(pc[2], pc[1], pulse_lv)
   end
@@ -716,10 +792,11 @@ local function grid_key(x, y, z)
   local action = ACTIONS[y] and ACTIONS[y][x]
   if action then
     action()
-    -- brief label: derived from position so it's consistent per session
+    -- Show popup with action label
     local slot = (y - 1) * 16 + x
-    flash_label = FLASH_LABELS[(slot % #FLASH_LABELS) + 1]
-    flash_t     = 1.0
+    s.popup_param = FLASH_LABELS[(slot % #FLASH_LABELS) + 1]
+    s.popup_val = s.chord
+    s.popup_time = 0.8
   end
 end
 
@@ -753,7 +830,19 @@ function init()
   -- main clock: animation + grid refresh at ~12fps
   clock.run(function()
     while true do
-      anim_t = anim_t + (1.0 / 12.0)
+      anim_frame = anim_frame + 1
+      
+      -- Decay string flash values
+      for i = 1, 6 do
+        s.string_flash[i] = math.max(3, s.string_flash[i] - 1.5)
+      end
+      
+      -- Decay popup time
+      if s.popup_time > 0 then
+        s.popup_time = s.popup_time - (1.0 / 12.0)
+      end
+      
+      s.beat_phase = (s.beat_phase + 1) % 360
       refresh_pulse_cells()
       redraw()
       grid_draw()
@@ -775,11 +864,20 @@ end
 function enc(n, d)
   if n == 1 then
     s.bpm = clamp(s.bpm + d, 60, 200)
+    s.popup_param = "BPM"
+    s.popup_val = s.bpm
+    s.popup_time = 0.8
     if s.playing then start_seq() end
   elseif n == 2 then
     s.root_midi = clamp(s.root_midi + d, 24, 60)
+    s.popup_param = "ROOT"
+    s.popup_val = s.root_midi
+    s.popup_time = 0.8
   elseif n == 3 then
     s.cutoff = clamp(s.cutoff + d * 100, 100, 8000)
+    s.popup_param = "CUTOFF"
+    s.popup_val = s.cutoff
+    s.popup_time = 0.8
     engine.cutoff(s.cutoff)
   end
 end
@@ -794,7 +892,8 @@ function key(n, z)
     if s.playing then stop_seq() else start_seq() end
   elseif n == 3 then
     randomise_patch()
-    flash_label = "PATCH"
-    flash_t     = 1.0
+    s.popup_param = "PATCH"
+    s.popup_val = "RND"
+    s.popup_time = 0.8
   end
 end
