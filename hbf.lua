@@ -91,6 +91,13 @@ local s = {
   cutoff       = 2000,
   pw           = 0.5,
   rel          = 0.3,
+  -- pattern memory
+  saved_patterns = {{}, {}, {}, {}},
+  pattern_slot = 1,
+  -- stutter lock
+  stutter_lock = false,
+  stutter_lock_note = nil,
+  stutter_lock_started = false,
 }
 
 --------------------------------------------------------------------------------
@@ -132,6 +139,62 @@ local function randomise_patch()
   s.cutoff = rnd({400,800,1200,2000,3500,6000,8000})
   s.pw     = math.random() * 0.7 + 0.1
   s.rel    = rnd({0.05,0.1,0.2,0.4,0.7,1.2})
+  apply_patch()
+end
+
+-- Save current roulette state + grid pattern to a slot
+local function save_pattern(slot)
+  if slot < 1 or slot > 4 then return end
+  s.saved_patterns[slot] = {
+    scale        = s.scale,
+    chord        = s.chord,
+    pat_idx      = s.pat_idx,
+    octave_shift = s.octave_shift,
+    pitch_bend   = s.pitch_bend,
+    gate         = s.gate,
+    velocity     = s.velocity,
+    swing        = s.swing,
+    chorus       = s.chorus,
+    minimal      = s.minimal,
+    distort      = s.distort,
+    stutter      = s.stutter,
+    stutter_div  = s.stutter_div,
+    glide        = s.glide,
+    skip         = s.skip,
+    cascade      = s.cascade,
+    vel_ramp     = s.vel_ramp,
+    cutoff       = s.cutoff,
+    pw           = s.pw,
+    rel          = s.rel,
+  }
+end
+
+-- Load pattern from a slot
+local function load_pattern(slot)
+  if slot < 1 or slot > 4 then return end
+  local p = s.saved_patterns[slot]
+  if not p or not p.scale then return end
+  
+  s.scale        = p.scale
+  s.chord        = p.chord
+  s.pat_idx      = p.pat_idx
+  s.octave_shift = p.octave_shift
+  s.pitch_bend   = p.pitch_bend
+  s.gate         = p.gate
+  s.velocity     = p.velocity
+  s.swing        = p.swing
+  s.chorus       = p.chorus
+  s.minimal      = p.minimal
+  s.distort      = p.distort
+  s.stutter      = p.stutter
+  s.stutter_div  = p.stutter_div
+  s.glide        = p.glide
+  s.skip         = p.skip
+  s.cascade      = p.cascade
+  s.vel_ramp     = p.vel_ramp
+  s.cutoff       = p.cutoff or 2000
+  s.pw           = p.pw or 0.5
+  s.rel          = p.rel or 0.3
   apply_patch()
 end
 
@@ -184,10 +247,26 @@ end
 --------------------------------------------------------------------------------
 
 local seq_id = nil
+local stutter_seq_id = nil
 
 local function step_sec()
   local base = 60.0 / s.bpm / 4.0
   return base / (s.stutter and s.stutter_div or 1)
+end
+
+-- Stutter lock: rapidly re-trigger the current note
+local function stutter_lock_trigger(midi, vel, base_dur)
+  if stutter_seq_id then clock.cancel(stutter_seq_id) end
+  
+  local stutter_rate = params:get("stutter_rate") or 16  -- 1/16 or 1/32
+  local stutter_dur = (60.0 / s.bpm / 4.0) / stutter_rate
+  
+  stutter_seq_id = clock.run(function()
+    while s.stutter_lock do
+      play_note(midi, vel, stutter_dur * 0.5)
+      clock.sleep(stutter_dur)
+    end
+  end)
 end
 
 local function advance()
@@ -212,7 +291,12 @@ local function advance()
 
   if s.minimal then
     if s.step % 2 == 1 then
-      play_note(scale_note(base_deg), vel, dur)
+      local note = scale_note(base_deg)
+      play_note(note, vel, dur)
+      if s.stutter_lock then
+        s.stutter_lock_note = note
+        stutter_lock_trigger(note, vel, dur)
+      end
     end
   else
     local notes = {}
@@ -228,6 +312,10 @@ local function advance()
           play_note(n, vel, dur)
         end)
       end
+      if s.stutter_lock then
+        s.stutter_lock_note = notes[1]
+        stutter_lock_trigger(notes[1], vel, dur)
+      end
     else
       for _, n in ipairs(notes) do
         play_note(n, vel, dur)
@@ -238,6 +326,10 @@ local function advance()
           play_note(notes[1], vel * 0.5, dur)
         end)
       end
+      if s.stutter_lock then
+        s.stutter_lock_note = notes[1]
+        stutter_lock_trigger(notes[1], vel, dur)
+      end
     end
   end
 
@@ -246,7 +338,9 @@ end
 
 local function start_seq()
   if seq_id then clock.cancel(seq_id) end
+  if stutter_seq_id then clock.cancel(stutter_seq_id) end
   s.playing = true
+  s.stutter_lock_started = s.stutter_lock
   seq_id = clock.run(function()
     while true do
       advance()
@@ -257,9 +351,14 @@ end
 
 local function stop_seq()
   s.playing = false
+  s.stutter_lock = false
   if seq_id then
     clock.cancel(seq_id)
     seq_id = nil
+  end
+  if stutter_seq_id then
+    clock.cancel(stutter_seq_id)
+    stutter_seq_id = nil
   end
   engine.hz(0)
 end
@@ -525,17 +624,23 @@ function redraw()
   if s.glide   then fx = fx .. "GLD "  end
   if s.cascade then fx = fx .. "CAS "  end
   if s.skip    then fx = fx .. "SKP "  end
+  if s.stutter_lock then fx = fx .. "LOCK " end
 
   screen.level(5)
   screen.font_size(8)
   screen.move(1, 62)
   screen.text(fx)
 
+  -- pattern slot indicator
+  screen.level(6)
+  screen.move(64, 62)
+  screen.text_center("P" .. s.pattern_slot)
+
   -- flash label
   if flash_t > 0 then
     screen.level(clamp(math.floor(flash_t * 14), 1, 15))
     screen.font_size(8)
-    screen.move(64, 62)
+    screen.move(100, 62)
     screen.text_center(flash_label)
     flash_t = math.max(0, flash_t - 0.08)
   end
@@ -629,6 +734,17 @@ function init()
   engine.gain(0.8)
 
   build_roulette()
+
+  -- add pattern memory and stutter lock params
+  params:add_separator("pattern_memory", "PATTERN MEMORY")
+  params:add_number("pattern_slot", "pattern slot", 1, 4, 1)
+  params:set_action("pattern_slot", function(v)
+    s.pattern_slot = v
+    load_pattern(v)
+  end)
+
+  params:add_separator("stutter_lock_cfg", "STUTTER LOCK")
+  params:add_number("stutter_rate", "stutter rate", 16, 32, 16)
 
   if g ~= nil then
     g.key = grid_key
