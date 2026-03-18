@@ -105,6 +105,14 @@ local s = {
   popup_time   = 0,
   string_flash = {0, 0, 0, 0, 0, 0},  -- brightness for each string
   strum_dir    = 1,  -- 1 = down, -1 = up
+  -- Filter LFO
+  filter_lfo_rate = 0.25,  -- 8-16 bars
+  filter_lfo_depth = 0,    -- 0-1
+  -- MIDI out
+  midi_enabled = false,
+  midi_channel = 1,
+  -- Multi-bar pattern
+  bar_count = 1,           -- 1-4 bars
 }
 
 --------------------------------------------------------------------------------
@@ -210,6 +218,8 @@ end
 --------------------------------------------------------------------------------
 
 local prev_hz = 0
+local midi_out = nil
+local pattern_lfo_phase = 0  -- 0-1 for LFO
 
 local function midi_to_hz(m)
   return 440.0 * (2.0 ^ ((m - 69.0) / 12.0))
@@ -223,12 +233,19 @@ local function scale_note(degree)
   return s.root_midi + oct * 12 + sc[idx] + s.octave_shift * 12 + s.pitch_bend
 end
 
+local function get_lfo_cutoff()
+  local base_cutoff = s.cutoff
+  local lfo_val = math.sin(pattern_lfo_phase * 2 * math.pi)  -- -1 to 1
+  local lfo_amt = lfo_val * s.filter_lfo_depth * 4000  -- scale to Hz
+  return clamp(base_cutoff + lfo_amt, 100, 8000)
+end
+
 local function play_note(midi, vel, dur)
   local hz = midi_to_hz(midi)
   if s.distort then
     hz = hz * (1.0 + (math.random() * 0.04 - 0.02))
   end
-  local cut = s.chorus and clamp(s.cutoff * 1.5, 100, 8000) or s.cutoff
+  local cut = s.chorus and clamp(s.cutoff * 1.5, 100, 8000) or get_lfo_cutoff()
   engine.cutoff(cut)
   engine.gain(clamp(vel * (s.chorus and 1.3 or 1.0), 0, 1))
   engine.release(dur * 0.6)
@@ -247,7 +264,16 @@ local function play_note(midi, vel, dur)
     engine.hz(hz)
   end
   prev_hz = hz
-  
+
+  -- Send MIDI if enabled
+  if s.midi_enabled and midi_out then
+    midi_out:note_on(midi, math.floor(vel * 127), s.midi_channel)
+    clock.run(function()
+      clock.sleep(dur)
+      midi_out:note_off(midi, 0, s.midi_channel)
+    end)
+  end
+
   -- Trigger strum flash animation
   for i = 1, 6 do
     s.string_flash[i] = 12
@@ -264,6 +290,12 @@ local stutter_seq_id = nil
 local function step_sec()
   local base = 60.0 / s.bpm / 4.0
   return base / (s.stutter and s.stutter_div or 1)
+end
+
+local function pattern_len_steps()
+  -- Multi-bar pattern: bar_count (1-4) determines steps
+  -- 1 bar = 16 steps, 2 bars = 32 steps, etc.
+  return 16 * s.bar_count
 end
 
 -- Stutter lock: rapidly re-trigger the current note
@@ -283,7 +315,8 @@ end
 
 local function advance()
   if s.skip and math.random() < 0.4 then
-    s.step = (s.step % 64) + 1
+    s.step = (s.step % (pattern_len_steps() + 1))
+    if s.step == 0 then s.step = 1 end
     return
   end
 
@@ -345,7 +378,7 @@ local function advance()
     end
   end
 
-  s.step = (s.step % 64) + 1
+  s.step = (s.step % pattern_len_steps()) + 1
 end
 
 local function start_seq()
@@ -823,25 +856,53 @@ function init()
   params:add_separator("stutter_lock_cfg", "STUTTER LOCK")
   params:add_number("stutter_rate", "stutter rate", 16, 32, 16)
 
+  -- Filter LFO params
+  params:add_separator("filter_lfo", "FILTER AUTOMATION")
+  params:add_control("filter_lfo_rate", "LFO rate",
+    controlspec.new(0.05, 1.0, "lin", 0.05, 0.25, ""))
+  params:set_action("filter_lfo_rate", function(v) s.filter_lfo_rate = v end)
+  params:add_control("filter_lfo_depth", "LFO depth",
+    controlspec.new(0, 1.0, "lin", 0.01, 0, ""))
+  params:set_action("filter_lfo_depth", function(v) s.filter_lfo_depth = v end)
+
+  -- MIDI out params
+  params:add_separator("midi_out_cfg", "MIDI OUT")
+  params:add_option("midi_enabled", "MIDI OUT", {"OFF", "ON"}, 1)
+  params:set_action("midi_enabled", function(v) s.midi_enabled = (v == 2) end)
+  params:add_number("midi_channel", "MIDI CH", 1, 16, 1)
+  params:set_action("midi_channel", function(v) s.midi_channel = v end)
+
+  -- Multi-bar pattern param
+  params:add_separator("pattern_cfg", "PATTERN")
+  params:add_number("bar_count", "bar count", 1, 4, 1)
+  params:set_action("bar_count", function(v) s.bar_count = v end)
+
   if g ~= nil then
     g.key = grid_key
   end
+
+  -- Connect MIDI out
+  midi_out = midi.connect(params:get("midi_out_device") or 1)
 
   -- main clock: animation + grid refresh at ~12fps
   clock.run(function()
     while true do
       anim_frame = anim_frame + 1
-      
+
+      -- Update filter LFO phase (8-16 bars = 8-16 seconds at 120 BPM)
+      -- rate 0.25 = 1 bar cycle at 120 BPM, 0.05 = 5 bar cycle, etc.
+      pattern_lfo_phase = (pattern_lfo_phase + (1.0/12.0) * s.filter_lfo_rate / 4.0) % 1.0
+
       -- Decay string flash values
       for i = 1, 6 do
         s.string_flash[i] = math.max(3, s.string_flash[i] - 1.5)
       end
-      
+
       -- Decay popup time
       if s.popup_time > 0 then
         s.popup_time = s.popup_time - (1.0 / 12.0)
       end
-      
+
       s.beat_phase = (s.beat_phase + 1) % 360
       refresh_pulse_cells()
       redraw()
@@ -850,6 +911,7 @@ function init()
     end
   end)
 
+  params:bang()
   start_seq()
 end
 
