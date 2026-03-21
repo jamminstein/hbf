@@ -291,7 +291,10 @@ end
 
 -- stutter lock: rapidly re-trigger the current note
 local function stutter_lock_trigger(midi_note, vel, base_dur)
-  if stutter_seq_id then clock.cancel(stutter_seq_id) end
+  if stutter_seq_id then
+    clock.cancel(stutter_seq_id)
+    stutter_seq_id = nil
+  end
   local rate = 16
   if params and params.lookup and params:lookup_param("stutter_rate") then
     rate = params:get("stutter_rate")
@@ -374,8 +377,14 @@ local function advance()
 end
 
 local function start_seq()
-  if seq_id then clock.cancel(seq_id) end
-  if stutter_seq_id then clock.cancel(stutter_seq_id) end
+  if seq_id then
+    clock.cancel(seq_id)
+    seq_id = nil
+  end
+  if stutter_seq_id then
+    clock.cancel(stutter_seq_id)
+    stutter_seq_id = nil
+  end
   s.playing = true
   s.stutter_lock_started = s.stutter_lock
   seq_id = clock.run(function()
@@ -397,7 +406,9 @@ local function stop_seq()
     clock.cancel(stutter_seq_id)
     stutter_seq_id = nil
   end
-  engine.hz(0)
+  -- let notes decay naturally via release envelope
+  -- (engine.hz(0) would trigger a 0 Hz note = rumble/click)
+  prev_hz = 0
 end
 
 --------------------------------------------------------------------------------
@@ -657,16 +668,16 @@ local ACTION_POOL = {
   function() s.pitch_bend = clamp(s.pitch_bend + 5, -7, 7) end,
   function() s.pitch_bend = clamp(s.pitch_bend - 5, -7, 7) end,
   function() s.pitch_bend = 0 end,
-  function() s.bpm = clamp(s.bpm + 10, 60, 200); if s.playing then start_seq() end end,
-  function() s.bpm = clamp(s.bpm - 10, 60, 200); if s.playing then start_seq() end end,
-  function() s.bpm = clamp(s.bpm + 20, 60, 200); if s.playing then start_seq() end end,
-  function() s.bpm = clamp(s.bpm - 20, 60, 200); if s.playing then start_seq() end end,
-  function() s.bpm = 120; if s.playing then start_seq() end end,
-  function() s.bpm = 128; if s.playing then start_seq() end end,
-  function() s.bpm = 140; if s.playing then start_seq() end end,
-  function() s.bpm = 160; if s.playing then start_seq() end end,
-  function() s.bpm = 174; if s.playing then start_seq() end end,
-  function() s.bpm = math.random(100,180); if s.playing then start_seq() end end,
+  function() s.bpm = clamp(s.bpm + 10, 60, 200) end,
+  function() s.bpm = clamp(s.bpm - 10, 60, 200) end,
+  function() s.bpm = clamp(s.bpm + 20, 60, 200) end,
+  function() s.bpm = clamp(s.bpm - 20, 60, 200) end,
+  function() s.bpm = 120 end,
+  function() s.bpm = 128 end,
+  function() s.bpm = 140 end,
+  function() s.bpm = 160 end,
+  function() s.bpm = 174 end,
+  function() s.bpm = math.random(100,180) end,
   function() s.stutter = true;  s.stutter_div = 2 end,
   function() s.stutter = true;  s.stutter_div = 4 end,
   function() s.stutter = true;  s.stutter_div = 8 end,
@@ -705,7 +716,7 @@ local ACTION_POOL = {
   function() s.octave_shift = clamp(s.octave_shift-1,-2,2); s.chord = "power" end,
   function() s.chorus = true; s.velocity = 1.0 end,
   function() s.scale = "phrygian"; s.glide = true end,
-  function() s.distort = true; s.bpm = clamp(math.floor(s.bpm*1.5),60,200); if s.playing then start_seq() end end,
+  function() s.distort = true; s.bpm = clamp(math.floor(s.bpm*1.5),60,200) end,
   function() s.minimal = true; s.gate = 0.1 end,
   function() s.stutter = true; s.stutter_div = 4; s.pitch_bend = clamp(s.pitch_bend+2,-7,7) end,
   function() s.pat_idx = 5; s.chorus = true end,
@@ -724,24 +735,23 @@ local ACTION_POOL = {
     s.chorus  = math.random() > 0.5
     s.distort = math.random() > 0.6
     randomise_patch()
-    if s.playing then start_seq() end
   end,
   function() s.scale = "dorian"; s.chord = "power"; s.swing = 25 end,
   function() s.cutoff = 8000; engine.cutoff(s.cutoff); s.cascade = true end,
   function() s.octave_shift = clamp(s.octave_shift-1,-2,2); s.stutter = true; s.stutter_div = 4 end,
-  function() s.scale = "wholetone"; s.chorus = true; s.bpm = clamp(s.bpm+20,60,200); if s.playing then start_seq() end end,
+  function() s.scale = "wholetone"; s.chorus = true; s.bpm = clamp(s.bpm+20,60,200) end,
   function() s.scale = "acid"; s.pat_idx = 5; s.stutter = true; s.stutter_div = 4 end,
   function() s.skip = true; s.scale = "phrygian" end,
   reset_fx,
   function() s.glide = true; s.distort = true end,
-  function() s.scale = "pentatonic"; s.bpm = clamp(math.floor(s.bpm*1.5),60,200); if s.playing then start_seq() end end,
+  function() s.scale = "pentatonic"; s.bpm = clamp(math.floor(s.bpm*1.5),60,200) end,
   function() s.chord = "sus4"; s.cascade = true end,
   function() s.stutter = true; s.stutter_div = 8; s.skip = true end,
   function() s.octave_shift = clamp(s.octave_shift+1,-2,2); s.chorus = true end,
   function() s.minimal = true; s.glide = true; s.scale = "dorian" end,
   function() s.vel_ramp = 1; s.scale = "acid"; s.vel_ramp_step = 0 end,
   function() s.minimal = true; s.pat_idx = 1; s.distort = true end,
-  function() randomise_patch(); s.bpm = math.random(100,170); if s.playing then start_seq() end end,
+  function() randomise_patch(); s.bpm = math.random(100,170) end,
   -- pattern memory actions
   function() save_pattern(s.pattern_slot) end,
   function() load_pattern(1); s.pattern_slot = 1 end,
@@ -926,7 +936,6 @@ function enc(n, d)
     flash_lbl = "BPM"
     flash_val = tostring(s.bpm)
     flash_t   = 1.0
-    if s.playing then start_seq() end
   elseif n == 2 then
     s.root_midi = clamp(s.root_midi + d, 24, 60)
     flash_lbl = "ROOT"
