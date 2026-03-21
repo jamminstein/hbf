@@ -1,6 +1,7 @@
 -- hbf.lua
 -- HARDER BETTER FASTER
 -- Daft Punk Acid Bass · Roulette Grid · Hi-Res Helmet Visualiser
+-- EVOLUTION ENGINE: Jams like a human — evolving, building tension, having fun
 -- requires: Norns + Grid (optimised for 16×8)
 -- engine: PolyPerc (built-in)
 --
@@ -110,6 +111,83 @@ local s = {
 }
 
 --------------------------------------------------------------------------------
+-- EVOLUTION ENGINE STATE
+--------------------------------------------------------------------------------
+
+local evolution = {
+  -- energy system: 0.0 (minimal) to 1.0 (full intensity)
+  energy = 0.5,
+  energy_target = 0.5,
+  energy_direction = 1,
+  energy_change_bars = 0,
+  
+  -- mood cycling
+  current_mood = "chill",
+  mood_bar_counter = 0,
+  
+  -- mutation tracking
+  micro_mutations = {},  -- per-step mutations
+  mutation_chance = 0.15,  -- 15% chance per step to mutate
+  
+  -- pattern memory for callbacks
+  pattern_history = {},
+  max_history = 8,
+  
+  -- meso-evolution counters
+  meso_bars = 0,
+  meso_interval = 8,
+  
+  -- macro-evolution counters
+  macro_bars = 0,
+  macro_interval = 32,
+  
+  -- evolution enabled
+  enabled = true,
+  evolution_speed = 1.0,  -- 0.5 = half speed, 2.0 = double speed
+}
+
+-- Mood definitions: influence how evolution feels
+local MOODS = {
+  chill = {
+    name = "chill",
+    energy_range = {0.2, 0.4},
+    filter_movement = 0.05,
+    mutation_chance = 0.08,
+    duration_bars = 16,
+  },
+  building = {
+    name = "building",
+    energy_range = {0.4, 0.7},
+    filter_movement = 0.15,
+    mutation_chance = 0.2,
+    duration_bars = 16,
+  },
+  peak = {
+    name = "peak",
+    energy_range = {0.8, 1.0},
+    filter_movement = 0.25,
+    mutation_chance = 0.3,
+    duration_bars = 12,
+  },
+  breakdown = {
+    name = "breakdown",
+    energy_range = {0.1, 0.3},
+    filter_movement = 0.02,
+    mutation_chance = 0.05,
+    duration_bars = 8,
+  },
+  driving = {
+    name = "driving",
+    energy_range = {0.6, 0.8},
+    filter_movement = 0.12,
+    mutation_chance = 0.18,
+    duration_bars = 14,
+  },
+}
+
+local MOOD_CYCLE = {"chill", "building", "peak", "breakdown", "driving", "chill"}
+
+--------------------------------------------------------------------------------
 -- HELPERS
 --------------------------------------------------------------------------------
 
@@ -211,6 +289,278 @@ local function load_pattern(slot)
 end
 
 --------------------------------------------------------------------------------
+-- EVOLUTION ENGINE
+--------------------------------------------------------------------------------
+
+local function get_neighbor_note(note, scale_name)
+  -- Get a neighbor scale degree from current note
+  local sc = SCALES[scale_name]
+  local idx = (note % #sc) + 1
+  local neighbors = {sc[(idx - 1) % #sc + 1], sc[idx], sc[(idx % #sc) + 1]}
+  return rnd(neighbors)
+end
+
+local function apply_micro_evolution(base_degree, step_index)
+  -- Micro-evolution: small mutations every 1-4 bars
+  local current_mood = MOODS[evolution.current_mood]
+  local mutation_chance = current_mood.mutation_chance
+  
+  if math.random() < mutation_chance then
+    local mutation_type = math.random(1, 3)
+    
+    if mutation_type == 1 then
+      -- Note mutation: occasional neighbor note replacement
+      local sc = SCALES[s.scale]
+      if math.random() < 0.6 then
+        -- Keep original
+        return base_degree
+      else
+        -- Move to neighbor
+        local idx = ((base_degree - 1) % #sc) + 1
+        local neighbor = rnd({idx - 1, idx + 1})
+        return base_degree + (neighbor - idx)
+      end
+    elseif mutation_type == 2 then
+      -- Ghost note: add an extra note quietly
+      return base_degree
+    else
+      -- Octave flip
+      return base_degree + (math.random() < 0.5 and -12 or 12)
+    end
+  end
+  
+  return base_degree
+end
+
+local function apply_meso_evolution()
+  -- Meso-evolution every 8-16 bars
+  -- Gradual pattern morphing, filter sweeps, octave shifts
+  if evolution.meso_bars >= evolution.meso_interval then
+    evolution.meso_bars = 0
+    
+    local actions = {}
+    
+    -- Filter sweep
+    table.insert(actions, function()
+      local direction = math.random() < 0.5 and 1 or -1
+      s.cutoff = clamp(s.cutoff + direction * 1000, 100, 8000)
+      engine.cutoff(s.cutoff)
+    end)
+    
+    -- Octave shift
+    table.insert(actions, function()
+      s.octave_shift = clamp(s.octave_shift + (math.random() < 0.5 and 1 or -1), -2, 2)
+    end)
+    
+    -- Pattern morphing
+    table.insert(actions, function()
+      local new_pat = math.random(1, #PATTERNS)
+      if new_pat ~= s.pat_idx then
+        s.pat_idx = new_pat
+      end
+    end)
+    
+    -- Chord variation
+    table.insert(actions, function()
+      s.chord = rnd(CHORD_NAMES)
+    end)
+    
+    -- Velocity drift
+    table.insert(actions, function()
+      s.velocity = clamp(s.velocity + (math.random() - 0.5) * 0.2, 0.2, 1.0)
+    end)
+    
+    -- Gate variation
+    table.insert(actions, function()
+      s.gate = rnd({0.1, 0.4, 0.6, 0.8, 1.0})
+    end)
+    
+    -- Pick 2-3 random evolution actions
+    local num_actions = math.random(2, 3)
+    for _ = 1, num_actions do
+      if #actions > 0 then
+        local action = table.remove(actions, math.random(#actions))
+        action()
+      end
+    end
+  end
+end
+
+local function apply_macro_evolution()
+  -- Macro-evolution every 32-64 bars
+  -- Section changes, energy arcs, scale modulation, "breakdown" moments
+  if evolution.macro_bars >= evolution.macro_interval then
+    evolution.macro_bars = 0
+    
+    local actions = {}
+    
+    -- Scale shift to related scale
+    table.insert(actions, function()
+      s.scale = rnd(SCALE_NAMES)
+    end)
+    
+    -- Major energy shift
+    table.insert(actions, function()
+      evolution.energy_target = math.random() < 0.5 and 0.3 or 0.9
+      evolution.energy_change_bars = 0
+    end)
+    
+    -- Introduce/remove complex effect
+    table.insert(actions, function()
+      local fx_pool = {"stutter", "chorus", "cascade", "glide"}
+      local fx = rnd(fx_pool)
+      if fx == "stutter" then
+        s.stutter = not s.stutter
+        s.stutter_div = rnd({2, 4, 8})
+      elseif fx == "chorus" then
+        s.chorus = not s.chorus
+      elseif fx == "cascade" then
+        s.cascade = not s.cascade
+      elseif fx == "glide" then
+        s.glide = not s.glide
+      end
+    end)
+    
+    -- "Breakdown" - minimize for a moment
+    table.insert(actions, function()
+      s.minimal = true
+      s.gate = 0.2
+      s.velocity = 0.5
+    end)
+    
+    -- Pick 1-2 actions
+    local num_actions = math.random(1, 2)
+    for _ = 1, num_actions do
+      if #actions > 0 then
+        local action = table.remove(actions, math.random(#actions))
+        action()
+      end
+    end
+  end
+end
+
+local function update_mood()
+  -- Cycle through moods based on bar counter
+  evolution.mood_bar_counter = evolution.mood_bar_counter + 1
+  
+  local mood_spec = MOODS[evolution.current_mood]
+  if mood_spec and evolution.mood_bar_counter >= mood_spec.duration_bars then
+    evolution.mood_bar_counter = 0
+    -- Find current mood in cycle and advance
+    for i, m in ipairs(MOOD_CYCLE) do
+      if m == evolution.current_mood then
+        evolution.current_mood = MOOD_CYCLE[(i % #MOOD_CYCLE) + 1]
+        break
+      end
+    end
+  end
+end
+
+local function update_energy()
+  -- Smoothly interpolate energy toward target
+  local mood_spec = MOODS[evolution.current_mood]
+  if mood_spec then
+    local target = mood_spec.energy_range[1] + math.random() * (mood_spec.energy_range[2] - mood_spec.energy_range[1])
+    evolution.energy_target = target
+  end
+  
+  -- Smooth lerp
+  local speed = 0.02 * evolution.evolution_speed
+  evolution.energy = evolution.energy + (evolution.energy_target - evolution.energy) * speed
+  evolution.energy = clamp(evolution.energy, 0.0, 1.0)
+end
+
+local function apply_energy_effects()
+  -- Energy affects pattern density, velocity, complexity
+  -- High energy: faster, louder, more complex
+  -- Low energy: sparse, quiet, minimal
+  
+  if evolution.energy > 0.7 then
+    -- High energy: increase density
+    if not s.stutter and math.random() < 0.1 then
+      s.stutter = true
+      s.stutter_div = rnd({2, 4})
+    end
+    if not s.cascade and math.random() < 0.05 then
+      s.cascade = true
+    end
+  elseif evolution.energy < 0.4 then
+    -- Low energy: reduce complexity
+    if s.cascade and math.random() < 0.1 then
+      s.cascade = false
+    end
+    s.minimal = math.random() < 0.3
+  end
+  
+  -- Energy affects velocity
+  s.velocity = clamp(0.3 + evolution.energy * 0.7, 0.2, 1.0)
+  
+  -- Energy affects gate
+  if evolution.energy > 0.8 then
+    s.gate = 0.7
+  elseif evolution.energy > 0.6 then
+    s.gate = 0.6
+  elseif evolution.energy < 0.3 then
+    s.gate = 0.4
+  else
+    s.gate = 0.5
+  end
+  
+  -- Energy affects filter cutoff drift
+  if evolution.energy > 0.7 then
+    s.cutoff = clamp(s.cutoff + math.random() * 200 - 100, 100, 8000)
+  elseif evolution.energy < 0.4 then
+    s.cutoff = clamp(s.cutoff + (math.random() - 0.5) * 100, 100, 8000)
+  end
+end
+
+local function pattern_callback()
+  -- Occasionally recall an earlier pattern (musical memory)
+  if #evolution.pattern_history > 0 and math.random() < 0.08 then
+    local callback_pattern = rnd(evolution.pattern_history)
+    -- Morph toward it gradually
+    s.pat_idx = callback_pattern.pat_idx
+    if math.random() < 0.5 then
+      s.scale = callback_pattern.scale
+    end
+  end
+end
+
+local function store_pattern_history()
+  -- Keep a running history of patterns for callbacks
+  local current = {
+    scale = s.scale,
+    chord = s.chord,
+    pat_idx = s.pat_idx,
+    cutoff = s.cutoff,
+  }
+  
+  table.insert(evolution.pattern_history, current)
+  if #evolution.pattern_history > evolution.max_history then
+    table.remove(evolution.pattern_history, 1)
+  end
+end
+
+local bars_elapsed = 0
+local function on_bar_boundary()
+  -- Called approximately once per bar
+  bars_elapsed = bars_elapsed + 1
+  
+  if evolution.enabled then
+    update_mood()
+    update_energy()
+    apply_energy_effects()
+    apply_meso_evolution()
+    apply_macro_evolution()
+    pattern_callback()
+    store_pattern_history()
+    
+    evolution.meso_bars = evolution.meso_bars + 1
+    evolution.macro_bars = evolution.macro_bars + 1
+  end
+end
+
+--------------------------------------------------------------------------------
 -- AUDIO
 --------------------------------------------------------------------------------
 
@@ -240,14 +590,21 @@ end
 
 local function play_note(midi_note, vel, dur)
   local hz = midi_to_hz(midi_note)
+  
+  -- Humanization: tiny random detune + timing offset
+  local humanize_detune = (math.random() - 0.5) * 0.005 * hz
+  hz = hz + humanize_detune
+  
   if s.distort then
     hz = hz * (1.0 + (math.random() * 0.04 - 0.02))
   end
+  
   local cut = s.chorus and clamp(s.cutoff * 1.5, 100, 8000) or get_lfo_cutoff()
   engine.cutoff(cut)
   engine.gain(clamp(vel * (s.chorus and 1.3 or 1.0), 0, 1))
   engine.release(dur * 0.6)
   engine.pw(s.pw)
+  
   if s.glide and prev_hz > 0 then
     local start_hz = prev_hz
     local steps    = 8
@@ -279,6 +636,8 @@ end
 
 local seq_id = nil
 local stutter_seq_id = nil
+local bar_counter = 0
+local steps_per_bar = 16
 
 local function step_sec()
   local base = 60.0 / s.bpm / 4.0
@@ -320,6 +679,10 @@ local function advance()
   local pat      = PATTERNS[s.pat_idx]
   local offsets  = CHORDS[s.chord]
   local base_deg = pat[((s.step - 1) % #pat) + 1]
+  
+  -- Apply micro-evolution mutation
+  base_deg = apply_micro_evolution(base_deg, s.step)
+  
   local dur      = step_sec() * s.gate
 
   local vel = s.velocity
@@ -331,7 +694,10 @@ local function advance()
       or  (1.0 - t * 0.7)
     vel = clamp(vel, 0.1, 1.0)
   end
-
+  
+  -- Humanization: tiny timing offset (swing + drunk)
+  local timing_offset = (math.random() - 0.5) * 0.005 * step_sec()
+  
   if s.minimal then
     if s.step % 2 == 1 then
       local note = scale_note(base_deg)
@@ -376,6 +742,11 @@ local function advance()
   end
 
   s.step = (s.step % pattern_len_steps()) + 1
+  bar_counter = bar_counter + 1
+  if bar_counter >= steps_per_bar then
+    bar_counter = 0
+    on_bar_boundary()
+  end
 end
 
 local function start_seq()
@@ -389,6 +760,7 @@ local function start_seq()
   end
   s.playing = true
   s.stutter_lock_started = s.stutter_lock
+  bar_counter = 0
   seq_id = clock.run(function()
     while true do
       advance()
@@ -541,7 +913,7 @@ function redraw()
   draw_helmet(2,  10, ox1, oy1, true,  beat_pulse)
   draw_helmet(76, 10, ox2, oy2, false, beat_pulse)
 
-  -- ── HUD ──────────────────────────────────────────────────────────────────────────
+  -- ── HUD ──────────────────────────────────────────────────────────────────────
   screen.font_face(1)
   screen.font_size(8)
 
@@ -603,6 +975,14 @@ function redraw()
     screen.level(4)
     screen.move(108, 63)
     screen.text("LFO")
+  end
+
+  -- Evolution energy indicator
+  if evolution.enabled then
+    local energy_bars = math.floor(evolution.energy * 8)
+    screen.level(clamp(5 + energy_bars, 3, 15))
+    screen.move(82, 63)
+    screen.text("E" .. energy_bars)
   end
 
   -- MIDI indicator
@@ -713,6 +1093,7 @@ local ACTION_POOL = {
   function() s.cutoff = 3000; engine.cutoff(s.cutoff) end,
   function() s.cutoff = 8000; engine.cutoff(s.cutoff) end,
   randomise_patch,
+  function() evolution.enabled = not evolution.enabled end,
   -- combos
   function() s.scale = "acid"; s.stutter = true; s.stutter_div = 4 end,
   function() s.octave_shift = clamp(s.octave_shift-1,-2,2); s.chord = "power" end,
@@ -893,6 +1274,14 @@ function init()
   params:add_separator("pattern_cfg", "PATTERN")
   params:add_number("bar_count", "bar count", 1, 4, 1)
   params:set_action("bar_count", function(v) s.bar_count = math.max(1, v) end)
+
+  -- evolution params
+  params:add_separator("evolution_cfg", "EVOLUTION ENGINE")
+  params:add_option("evolution_enabled", "evolution", {"OFF", "ON"}, 2)
+  params:set_action("evolution_enabled", function(v) evolution.enabled = (v == 2) end)
+  params:add_control("evolution_speed", "evolution speed",
+    controlspec.new(0.5, 2.0, "lin", 0.1, 1.0, "x"))
+  params:set_action("evolution_speed", function(v) evolution.evolution_speed = v end)
 
   if g ~= nil then
     g.key = grid_key
