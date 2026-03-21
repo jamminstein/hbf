@@ -566,6 +566,11 @@ end
 
 local prev_hz = 0
 local midi_out = nil
+
+-- OP-XY MIDI
+local opxy_out = nil
+local function opxy_note_on(note, vel) if opxy_out then opxy_out:note_on(note, vel, params:get("opxy_channel")) end end
+local function opxy_note_off(note) if opxy_out then opxy_out:note_off(note, 0, params:get("opxy_channel")) end end
 local pattern_lfo_phase = 0
 
 local function midi_to_hz(m)
@@ -628,6 +633,12 @@ local function play_note(midi_note, vel, dur)
       midi_out:note_off(midi_note, 0, s.midi_channel)
     end)
   end
+  -- OP-XY MIDI out
+  opxy_note_on(midi_note, math.floor(vel * 127))
+  clock.run(function()
+    clock.sleep(dur)
+    opxy_note_off(midi_note)
+  end)
 end
 
 --------------------------------------------------------------------------------
@@ -1290,6 +1301,11 @@ function init()
   -- connect MIDI out (device 1 by default)
   midi_out = midi.connect(1)
 
+  params:add_separator("OP-XY MIDI")
+  params:add{type="number", id="opxy_device", name="OP-XY Device", min=1, max=16, default=2, action=function(v) opxy_out = midi.connect(v) end}
+  params:add{type="number", id="opxy_channel", name="OP-XY Channel", min=1, max=16, default=1}
+  opxy_out = midi.connect(params:get("opxy_device"))
+
   -- main loop: animation + screen + grid at ~12 fps
   clock.run(function()
     while true do
@@ -1315,6 +1331,7 @@ end
 
 function cleanup()
   stop_seq()
+  if opxy_out then for ch=1,16 do opxy_out:cc(123,0,ch) end end
 end
 
 --------------------------------------------------------------------------------
