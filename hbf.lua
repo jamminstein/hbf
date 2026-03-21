@@ -286,6 +286,8 @@ local function step_sec()
 end
 
 local function pattern_len_steps()
+  -- Guard against division by zero
+  s.bar_count = math.max(1, s.bar_count)
   return 16 * s.bar_count
 end
 
@@ -890,7 +892,7 @@ function init()
   -- multi-bar pattern param
   params:add_separator("pattern_cfg", "PATTERN")
   params:add_number("bar_count", "bar count", 1, 4, 1)
-  params:set_action("bar_count", function(v) s.bar_count = v end)
+  params:set_action("bar_count", function(v) s.bar_count = math.max(1, v) end)
 
   if g ~= nil then
     g.key = grid_key
