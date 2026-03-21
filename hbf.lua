@@ -1201,7 +1201,7 @@ local function refresh_pulse_cells()
 end
 
 local function grid_draw()
-  if g == nil then return end
+  if not g.device then return end
   g:all(0)
   g:led(1, 1, s.playing and 15 or 5)
   g:led(2, 1, s.playing and 4  or 12)
