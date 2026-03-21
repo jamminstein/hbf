@@ -647,6 +647,7 @@ end
 
 local seq_id = nil
 local stutter_seq_id = nil
+local screen_clock_id = nil
 local bar_counter = 0
 local steps_per_bar = 16
 
@@ -1307,7 +1308,7 @@ function init()
   opxy_out = midi.connect(params:get("opxy_device"))
 
   -- main loop: animation + screen + grid at ~12 fps
-  clock.run(function()
+  screen_clock_id = clock.run(function()
     while true do
       local dt = 1.0 / 12.0
       anim_t = anim_t + dt
@@ -1331,6 +1332,8 @@ end
 
 function cleanup()
   stop_seq()
+  if screen_clock_id then clock.cancel(screen_clock_id) end
+  if midi_out then for ch=1,16 do midi_out:cc(123,0,ch) end end
   if opxy_out then for ch=1,16 do opxy_out:cc(123,0,ch) end end
 end
 
