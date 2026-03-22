@@ -1345,17 +1345,10 @@ function enc(n, d)
   if n == 1 then
     -- E1 reserved for norns system
   elseif n == 2 then
-    if k1_held then
-      s.bpm = clamp(s.bpm + d, 60, 200)
-      flash_lbl = "BPM"
-      flash_val = tostring(s.bpm)
-      flash_t   = 1.0
-    else
-      s.root_midi = clamp(s.root_midi + d, 24, 60)
-      flash_lbl = "ROOT"
-      flash_val = musicutil.note_num_to_name(s.root_midi, true)
-      flash_t   = 1.0
-    end
+    s.root_midi = clamp(s.root_midi + d, 24, 60)
+    flash_lbl = "ROOT"
+    flash_val = musicutil.note_num_to_name(s.root_midi, true)
+    flash_t   = 1.0
   elseif n == 3 then
     s.cutoff = clamp(s.cutoff + d * 100, 100, 8000)
     flash_lbl = "CUTOFF"
@@ -1369,13 +1362,7 @@ end
 -- NORNS BUTTONS
 --------------------------------------------------------------------------------
 
-local k1_held = false
-
 function key(n, z)
-  if n == 1 then
-    k1_held = (z == 1)
-    return
-  end
   if z == 0 then return end
   if n == 2 then
     if s.playing then stop_seq() else start_seq() end
